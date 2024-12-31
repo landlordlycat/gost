@@ -20,7 +20,7 @@ import (
 )
 
 // Version is the gost version.
-const Version = "2.11.1"
+const Version = "2.12.0"
 
 // Debug is a flag that enables the debug log.
 var Debug bool
@@ -79,6 +79,8 @@ var (
 
 	// DefaultUserAgent is the default HTTP User-Agent header used by HTTP and websocket.
 	DefaultUserAgent = "Chrome/78.0.3904.106"
+
+	DefaultProxyAgent = "gost/" + Version
 
 	// DefaultMTU is the default mtu for tun/tap device
 	DefaultMTU = 1350
@@ -147,9 +149,7 @@ func (rw *readWriter) Write(p []byte) (n int, err error) {
 	return rw.w.Write(p)
 }
 
-var (
-	nopClientConn = &nopConn{}
-)
+var nopClientConn = &nopConn{}
 
 // a nop connection implements net.Conn,
 // it does nothing.

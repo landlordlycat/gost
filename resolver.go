@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -263,9 +262,7 @@ func (r *resolver) copyServers() []NameServer {
 	defer r.mux.RUnlock()
 
 	servers := make([]NameServer, len(r.servers))
-	for i := range r.servers {
-		servers[i] = r.servers[i]
-	}
+	copy(servers, r.servers)
 
 	return servers
 }
@@ -312,17 +309,28 @@ func (r *resolver) resolve(ctx context.Context, ex Exchanger, host string) (ips 
 	r.mux.RUnlock()
 
 	if prefer == "ipv6" { // prefer ipv6
-		mq := &dns.Msg{}
-		mq.SetQuestion(dns.Fqdn(host), dns.TypeAAAA)
-		ips, err = r.resolveIPs(ctx, ex, mq)
-		if err != nil || len(ips) > 0 {
+		if ips, err = r.resolve6(ctx, ex, host); len(ips) > 0 {
 			return
 		}
+		return r.resolve4(ctx, ex, host)
 	}
 
-	mq := &dns.Msg{}
+	if ips, err = r.resolve4(ctx, ex, host); len(ips) > 0 {
+		return
+	}
+	return r.resolve6(ctx, ex, host)
+}
+
+func (r *resolver) resolve4(ctx context.Context, ex Exchanger, host string) (ips []net.IP, err error) {
+	mq := dns.Msg{}
 	mq.SetQuestion(dns.Fqdn(host), dns.TypeA)
-	return r.resolveIPs(ctx, ex, mq)
+	return r.resolveIPs(ctx, ex, &mq)
+}
+
+func (r *resolver) resolve6(ctx context.Context, ex Exchanger, host string) (ips []net.IP, err error) {
+	mq := dns.Msg{}
+	mq.SetQuestion(dns.Fqdn(host), dns.TypeAAAA)
+	return r.resolveIPs(ctx, ex, &mq)
 }
 
 func (r *resolver) resolveIPs(ctx context.Context, ex Exchanger, mq *dns.Msg) (ips []net.IP, err error) {
@@ -709,7 +717,8 @@ func (ex *dnsExchanger) Exchange(ctx context.Context, query []byte) ([]byte, err
 	defer c.Close()
 
 	conn := &dns.Conn{
-		Conn: c,
+		Conn:    c,
+		UDPSize: 1024,
 	}
 	if _, err = conn.Write(query); err != nil {
 		return nil, err
@@ -905,7 +914,7 @@ func (ex *dohExchanger) Exchange(ctx context.Context, query []byte) ([]byte, err
 	}
 
 	// Read wireformat response from the body
-	buf, err := ioutil.ReadAll(resp.Body)
+	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the response body: %s", err)
 	}

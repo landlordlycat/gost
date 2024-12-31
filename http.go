@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -173,7 +174,12 @@ func (h *httpHandler) handleRequest(conn net.Conn, req *http.Request) {
 		ProtoMinor: 1,
 		Header:     http.Header{},
 	}
-	resp.Header.Add("Proxy-Agent", "gost/"+Version)
+
+	proxyAgent := DefaultProxyAgent
+	if h.options.ProxyAgent != "" {
+		proxyAgent = h.options.ProxyAgent
+	}
+	resp.Header.Add("Proxy-Agent", proxyAgent)
 
 	if !Can("tcp", host, h.options.Whitelist, h.options.Blacklist) {
 		log.Logf("[http] %s - %s : Unauthorized to tcp connect to %s",
@@ -252,7 +258,9 @@ func (h *httpHandler) handleRequest(conn net.Conn, req *http.Request) {
 
 		// forward http request
 		lastNode := route.LastNode()
-		if req.Method != http.MethodConnect && lastNode.Protocol == "http" {
+		if req.Method != http.MethodConnect &&
+			lastNode.Protocol == "http" &&
+			!h.options.HTTPTunnel {
 			err = h.forwardRequest(conn, req, route)
 			if err == nil {
 				return
@@ -285,25 +293,63 @@ func (h *httpHandler) handleRequest(conn net.Conn, req *http.Request) {
 	}
 	defer cc.Close()
 
-	if req.Method == http.MethodConnect {
-		b := []byte("HTTP/1.1 200 Connection established\r\n" +
-			"Proxy-Agent: gost/" + Version + "\r\n\r\n")
-		if Debug {
-			log.Logf("[http] %s <- %s\n%s", conn.RemoteAddr(), conn.LocalAddr(), string(b))
-		}
-		conn.Write(b)
-	} else {
-		req.Header.Del("Proxy-Connection")
-
-		if err = req.Write(cc); err != nil {
-			log.Logf("[http] %s -> %s : %s", conn.RemoteAddr(), conn.LocalAddr(), err)
-			return
-		}
+	if req.Method != http.MethodConnect {
+		h.handleProxy(conn, cc, req)
+		return
 	}
+
+	b := []byte("HTTP/1.1 200 Connection established\r\n" +
+		"Proxy-Agent: " + proxyAgent + "\r\n\r\n")
+	if Debug {
+		log.Logf("[http] %s <- %s\n%s", conn.RemoteAddr(), conn.LocalAddr(), string(b))
+	}
+	conn.Write(b)
 
 	log.Logf("[http] %s <-> %s", conn.RemoteAddr(), host)
 	transport(conn, cc)
 	log.Logf("[http] %s >-< %s", conn.RemoteAddr(), host)
+}
+
+func (h *httpHandler) handleProxy(rw, cc io.ReadWriter, req *http.Request) (err error) {
+	req.Header.Del("Proxy-Connection")
+
+	if err = req.Write(cc); err != nil {
+		return err
+	}
+
+	ch := make(chan error, 1)
+
+	go func() {
+		ch <- copyBuffer(rw, cc)
+	}()
+
+	for {
+		err := func() error {
+			req, err := http.ReadRequest(bufio.NewReader(rw))
+			if err != nil {
+				return err
+			}
+
+			if Debug {
+				dump, _ := httputil.DumpRequest(req, false)
+				log.Log(string(dump))
+			}
+
+			req.Header.Del("Proxy-Connection")
+
+			if err = req.Write(cc); err != nil {
+				return err
+			}
+			return nil
+		}()
+		ch <- err
+
+		if err != nil {
+			break
+		}
+	}
+
+	return <-ch
 }
 
 func (h *httpHandler) authenticate(conn net.Conn, req *http.Request, resp *http.Response) (ok bool) {
@@ -372,7 +418,7 @@ func (h *httpHandler) authenticate(conn net.Conn, req *http.Request, resp *http.
 	} else {
 		resp.Header = http.Header{}
 		resp.Header.Set("Server", "nginx/1.14.1")
-		resp.Header.Set("Date", time.Now().Format(http.TimeFormat))
+		resp.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 		if resp.StatusCode == http.StatusOK {
 			resp.Header.Set("Connection", "keep-alive")
 		}

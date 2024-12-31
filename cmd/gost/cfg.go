@@ -5,8 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
-	"io/ioutil"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -58,7 +57,11 @@ func tlsConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 
 	cfg := &tls.Config{Certificates: []tls.Certificate{cert}}
 
-	if pool, _ := loadCA(caFile); pool != nil {
+	pool, err := loadCA(caFile)
+	if err != nil {
+		return nil, err
+	}
+	if pool != nil {
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
@@ -71,12 +74,12 @@ func loadCA(caFile string) (cp *x509.CertPool, err error) {
 		return
 	}
 	cp = x509.NewCertPool()
-	data, err := ioutil.ReadFile(caFile)
+	data, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, err
 	}
 	if !cp.AppendCertsFromPEM(data) {
-		return nil, errors.New("AppendCertsFromPEM failed")
+		return nil, fmt.Errorf("loadCA %s: AppendCertsFromPEM failed", caFile)
 	}
 	return
 }
@@ -107,6 +110,7 @@ func parseUsers(authFile string) (users []*url.Userinfo, err error) {
 	if err != nil {
 		return
 	}
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -152,33 +156,38 @@ func parseIP(s string, port string) (ips []string) {
 		port = "8080" // default port
 	}
 
+	addrFn := func(s, port string) string {
+		c := strings.Count(s, ":")
+		if c == 0 || //ipv4 or domain
+			s[len(s)-1] == ']' { //[ipv6]
+			return s + ":" + port
+		}
+		if c > 1 && s[0] != '[' { // ipv6
+			return "[" + s + "]:" + port
+		}
+		return s //ipv4:port or [ipv6]:port
+	}
+
 	file, err := os.Open(s)
 	if err != nil {
 		ss := strings.Split(s, ",")
 		for _, s := range ss {
 			s = strings.TrimSpace(s)
 			if s != "" {
-				// TODO: support IPv6
-				if !strings.Contains(s, ":") {
-					s = s + ":" + port
-				}
-				ips = append(ips, s)
+				ips = append(ips, addrFn(s, port))
 			}
 
 		}
 		return
 	}
-
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !strings.Contains(line, ":") {
-			line = line + ":" + port
-		}
-		ips = append(ips, line)
+		ips = append(ips, addrFn(line, port))
 	}
 	return
 }

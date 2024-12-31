@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -365,7 +364,11 @@ func (h *http2Handler) roundTrip(w http.ResponseWriter, r *http.Request) {
 		log.Logf("[http2] %s - %s\n%s", r.RemoteAddr, laddr, string(dump))
 	}
 
-	w.Header().Set("Proxy-Agent", "gost/"+Version)
+	proxyAgent := DefaultProxyAgent
+	if h.options.ProxyAgent != "" {
+		proxyAgent = h.options.ProxyAgent
+	}
+	w.Header().Set("Proxy-Agent", proxyAgent)
 
 	if !Can("tcp", host, h.options.Whitelist, h.options.Blacklist) {
 		log.Logf("[http2] %s - %s : Unauthorized to tcp connect to %s",
@@ -385,7 +388,7 @@ func (h *http2Handler) roundTrip(w http.ResponseWriter, r *http.Request) {
 		ProtoMajor: 2,
 		ProtoMinor: 0,
 		Header:     http.Header{},
-		Body:       ioutil.NopCloser(bytes.NewReader([]byte{})),
+		Body:       io.NopCloser(bytes.NewReader([]byte{})),
 	}
 
 	if !h.authenticate(w, r, resp) {
@@ -535,7 +538,7 @@ func (h *http2Handler) authenticate(w http.ResponseWriter, r *http.Request, resp
 	} else {
 		resp.Header = http.Header{}
 		resp.Header.Set("Server", "nginx/1.14.1")
-		resp.Header.Set("Date", time.Now().Format(http.TimeFormat))
+		resp.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 		if resp.ContentLength > 0 {
 			resp.Header.Set("Content-Type", "text/html")
 		}
